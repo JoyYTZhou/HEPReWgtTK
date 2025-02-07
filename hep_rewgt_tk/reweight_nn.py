@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from os.path import join as pjoin
 import pandas as pd
 import numpy as np
-from src.learning.reweight_base import ReweighterBase, WeightedDataset, Generator, Discriminator
+from reweight_base import ReweighterBase, WeightedDataset, Discriminator
 
 def check_device():
     if torch.cuda.is_available():
