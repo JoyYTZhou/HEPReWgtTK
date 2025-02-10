@@ -5,7 +5,7 @@ import numpy as np
 import xgboost as xgb
 from sklearn.preprocessing import LabelEncoder
 from os.path import join as pjoin
-from reweight_base import ReweighterBase
+from .reweight_base import ReweighterBase
 from hep_ml.reweight import GBReweighter
 import pickle
 
