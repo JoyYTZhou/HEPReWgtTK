@@ -6,6 +6,7 @@ import xgboost as xgb
 from sklearn.preprocessing import LabelEncoder
 from os.path import join as pjoin
 from .reweight_base import ReweighterBase
+from .plotUtils import PlotUtils
 from hep_ml.reweight import GBReweighter
 import pickle
 
@@ -31,7 +32,7 @@ class SingleXGBReweighter(ReweighterBase):
     def boostingSearch(self, max_depth, num_round, seed=42, booster='gbtree') -> None:
         params = self.__define_params(max_depth, booster)
         metric = self.metric
-        
+
         cv_results = xgb.cv(
             params=params,
             dtrain=self.dtrain,
@@ -42,10 +43,12 @@ class SingleXGBReweighter(ReweighterBase):
             as_pandas=True,
             verbose_eval=20
         )
-        
+
         best_round = cv_results[f'test-{metric}-mean'].idxmin()
         print(f"Optimal number of boosting rounds: {best_round}")
-        
+
+        PlotUtils.plot_cv_results(cv_results, best_round)
+
         self.__cv_results = cv_results
         self.__boost_round = best_round
     
