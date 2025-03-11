@@ -1,12 +1,14 @@
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
-import torch
+import torch, os
+import logging
 import torch.nn as nn
 import seaborn as sns
 from torch.utils.data import Dataset
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 
+pjoin = os.path.join
 
 def add_hidden_layer(layers, in_dim, hidden_dims, activation):
     """Add hidden layers to the model."""
@@ -14,6 +16,119 @@ def add_hidden_layer(layers, in_dim, hidden_dims, activation):
         layers.append(nn.Linear(in_dim, h_dim))
         layers.append(activation)
         in_dim = h_dim
+
+def check_device():
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
+    logging.info(f"Using device: {device}")
+    return device
+
+class TrainingUtils:
+    @staticmethod
+    def train_epoch(model, train_loader, criterion, optimizer, device):
+        """Train model for one epoch.
+        
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model to train
+        train_loader : DataLoader
+            Training data loader
+        criterion : torch.nn.Module
+            Loss function
+        optimizer : torch.optim.Optimizer
+            Optimizer
+        device : torch.device
+            Device to use for training
+            
+        Returns
+        -------
+        float
+            Average loss for this epoch
+        """
+        model.train()
+        running_loss = 0.0
+        
+        for batch_data, batch_labels, batch_weights in train_loader:
+            batch_data = batch_data.to(device)
+            batch_labels = batch_labels.to(device)
+            batch_weights = batch_weights.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(batch_data)
+            loss = criterion(outputs, batch_labels)
+            weighted_loss = (loss * batch_weights).mean()
+            weighted_loss.backward()
+            optimizer.step()
+            
+            running_loss += weighted_loss.item()
+            
+        return running_loss / len(train_loader)
+
+    @staticmethod
+    def validate(model, val_loader, criterion, device):
+        """Validate the model.
+        
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model to validate
+        val_loader : DataLoader
+            Validation data loader
+        criterion : torch.nn.Module
+            Loss function
+        device : torch.device
+            Device to use for validation
+            
+        Returns
+        -------
+        float
+            Validation loss
+        """
+        model.eval()
+        val_loss = 0.0
+        
+        with torch.no_grad():
+            for val_data, val_labels, val_weights in val_loader:
+                val_data = val_data.to(device)
+                val_labels = val_labels.to(device)
+                val_weights = val_weights.to(device)
+                
+                val_outputs = model(val_data)
+                loss = criterion(val_outputs, val_labels)
+                weighted_loss = (loss * val_weights).mean()
+                val_loss += weighted_loss.item()
+                
+        return val_loss / len(val_loader)
+
+    @staticmethod
+    def save_checkpoint(model, epoch, save_path, optimizer=None, scheduler=None):
+        """Save a model checkpoint.
+        
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model to save
+        epoch : int
+            Current epoch number
+        save_path : str
+            Path to save the checkpoint
+        optimizer : torch.optim.Optimizer, optional
+            Optimizer state to save
+        scheduler : torch.optim.lr_scheduler._LRScheduler, optional
+            Learning rate scheduler state to save
+        """
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict() if optimizer else None,
+            'scheduler_state_dict': scheduler.state_dict() if scheduler else None
+        }
+        torch.save(checkpoint, save_path)
 
 class ReweighterBase():
     """Base class for reweighting.
@@ -188,7 +303,7 @@ class ReweighterBase():
         if save:
             plt.savefig(save_path)
         plt.close()
-        
+
 class WeightedDataset(Dataset):
     """Dataset class for weighted data."""
     def __init__(self, dataframe, feature_columns, weight_column):
@@ -218,16 +333,103 @@ class Generator(nn.Module):
     def forward(self, z):
         return self.main(z)
 
-class Discriminator(nn.Module):
-    def __init__(self, input_dim, hidden_dims):
+class PredictionUtils:
+    @staticmethod
+    def predict_in_batches(model, data, device, batch_size=512):
+        """Make predictions in batches.
+        
+        Parameters
+        ----------
+        model : torch.nn.Module
+            Model to use for predictions
+        data : torch.Tensor
+            Input data
+        device : torch.device
+            Device to use for predictions
+        batch_size : int, optional
+            Batch size for predictions
+            
+        Returns
+        -------
+        numpy.ndarray
+            Predictions
+        """
+        model.eval()
+        model.to(device)
+        
+        predictions = []
+        with torch.no_grad():
+            for i in range(0, len(data), batch_size):
+                batch = data[i:i + batch_size].to(device)
+                pred = model(batch).cpu()
+                predictions.append(pred)
+                
+        return torch.cat(predictions).numpy().squeeze()
+
+    @staticmethod
+    def compute_weights(predictions, original_weights, normalize_factor, epsilon=1e-6):
+        """Compute reweighting factors.
+        
+        Parameters
+        ----------
+        predictions : numpy.ndarray
+            Model predictions
+        original_weights : numpy.ndarray
+            Original sample weights
+        normalize_factor : float
+            Normalization factor
+        epsilon : float, optional
+            Small value to prevent division by zero
+            
+        Returns
+        -------
+        numpy.ndarray
+            New weights
+        """
+        # Clip predictions to avoid division by zero
+        predictions = np.clip(predictions, epsilon, 1 - epsilon)
+        
+        # Calculate weights using the reweighting formula
+        new_weights = original_weights * predictions / (1 - predictions)
+        
+        # Normalize weights
+        new_weights *= normalize_factor / new_weights.sum()
+        
+        return new_weights
+
+class MLPClassifier(nn.Module):
+    """Multi-Layer Perceptron for binary classification.
+    
+    Parameters
+    ----------
+    input_dim : int
+        Number of input features
+    hidden_dims : list
+        List of integers for the number of nodes in each hidden layer
+    dropout_rate : float, optional
+        Dropout rate for regularization (default: 0.2)
+    """
+    def __init__(self, input_dim: int, hidden_dims: list, dropout_rate: float = 0.2):
         super().__init__()
-
+        
         layers = []
-        add_hidden_layer(layers, input_dim, hidden_dims, nn.ReLU())
-        layers.append(nn.Linear(hidden_dims[-1], 1))
+        prev_dim = input_dim
+        
+        for hidden_dim in hidden_dims:
+            layers.extend([
+                nn.Linear(prev_dim, hidden_dim),
+                nn.ReLU(),
+                nn.BatchNorm1d(hidden_dim),
+                nn.Dropout(dropout_rate)
+            ])
+            prev_dim = hidden_dim
+        
+        # Output layer
+        layers.append(nn.Linear(prev_dim, 1))
         layers.append(nn.Sigmoid())
-
-        self.main = nn.Sequential(*layers)
+        
+        self.model = nn.Sequential(*layers)
     
     def forward(self, x):
-        return self.main(x)
+        return self.model(x)
+    
