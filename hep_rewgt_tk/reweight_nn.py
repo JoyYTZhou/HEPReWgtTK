@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn.utils import spectral_norm
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
@@ -7,6 +8,7 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from os.path import join as pjoin
 import pandas as pd
+from torchviz import make_dot
 import os
 from .reweight_base import ReweighterBase, WeightedDataset, MLPClassifier, check_device, TrainingUtils, PredictionUtils
 
@@ -23,6 +25,7 @@ class SingleMLPRwgter(ReweighterBase):
         Drop columns containing the keywords in `drop_kwd` and negatively weighted events if `drop_neg_wgts` is True."""
         X, y, weights = self.prep_ori_tar(self.ori_data, self.tar_data, drop_kwd, self.weight_column, drop_wgts=True, drop_neg_wgts=drop_neg_wgts)
         features = list(X.columns)
+        print(f"Features: {features}")
 
         X[features] = self.scaler.fit_transform(X[features])
 
@@ -32,16 +35,16 @@ class SingleMLPRwgter(ReweighterBase):
         self.val_dataset = TensorDataset(torch.tensor(X_val, dtype=torch.float32), torch.tensor(y_val, dtype=torch.float32).view(-1, 1), torch.tensor(w_val, dtype=torch.float32))
         self.features = features
 
-    def train(self, num_epochs, hidden_dims, batch_size, lr, dropout=0.2, save=True, 
-             savename='SingleNNmodel.pth', save_interval=30):
+    def train(self, num_epochs, hidden_arch: 'str', batch_size, lr, dropout=0.2, save=True, 
+             savename='SingleNNmodel.pth', save_interval=30, latent_dim=64):
         """Train the discriminator model.
 
         Parameters
         ----------
         num_epochs : int
             Number of epochs
-        hidden_dims : list
-            List of integers containing the number of hidden units in each layer
+        hidden_arch : str
+            Hidden architecture of the model
         batch_size : int
             Batch size
         lr : float
@@ -59,7 +62,9 @@ class SingleMLPRwgter(ReweighterBase):
         input_dim = len(self.features)
 
         # Model setup
-        self.model = MLPClassifier(input_dim, hidden_dims, dropout_rate=dropout).to(device)
+        self.model = MLPClassifier(input_dim, latent_dim, hidden_choice=hidden_arch, dropout_rate=dropout
+        ).to(device)
+        
         self.criterion = nn.BCELoss()
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
@@ -109,7 +114,7 @@ class SingleMLPRwgter(ReweighterBase):
 
         self._name = savename.split('.')[0]
 
-    def load_checkpoint(self, checkpoint_path, input_dim=None, hidden_dims=None):
+    def load_checkpoint(self, checkpoint_path, input_dim, hidden_choice:'str', latent_dim=64):
         """Load model from a checkpoint.
         
         Parameters
@@ -127,10 +132,8 @@ class SingleMLPRwgter(ReweighterBase):
         checkpoint = torch.load(checkpoint_path, map_location=device)
         
         # Initialize model if not exists
-        if not hasattr(self, 'model'):
-            if input_dim is None or hidden_dims is None:
-                raise ValueError("Must provide input_dim and hidden_dims when loading model for the first time")
-            self.model = MLPClassifier(input_dim, hidden_dims).to(device)
+        self.model = MLPClassifier(input_dim, latent_dim, hidden_choice=hidden_choice
+        ).to(device)
         
         # Load model state
         self.model.load_state_dict(checkpoint['model_state_dict'])
@@ -146,7 +149,7 @@ class SingleMLPRwgter(ReweighterBase):
         return checkpoint['epoch']
     
     def visualize(self, save=False):
-        """Visualize the training and validation losses."""
+        """Visualize the training and validation losses + model architecture."""
         plt.figure(figsize=[12, 7])
         plt.plot(self.history['train'], label='Train')
         plt.plot(self.history['val'], label='Validation')
@@ -158,13 +161,15 @@ class SingleMLPRwgter(ReweighterBase):
             plt.savefig(pjoin(self.results_dir, 'train_val_losses.png'))
         else:
             plt.show()
+
+        self.model = self.model.cpu()
     
     def evaluate(self):
         """Compute the AUC score for the model."""
         device = check_device()
 
-        print("Validation AUC:", self.compute_nn_auc(self.model, DataLoader(self.val_dataset, batch_size=64, shuffle=False), device=device, save=False, save_path=''))
-        print("Training AUC:", self.compute_nn_auc(self.model, DataLoader(self.dataset, batch_size=64, shuffle=False), device=device, save=False, save_path=''))
+        print("Validation AUC:", self.compute_nn_auc(self.model, DataLoader(self.val_dataset, batch_size=64, shuffle=False), device=device, save=False, save_path='', title='Validation ROC Curve'))
+        print("Training AUC:", self.compute_nn_auc(self.model, DataLoader(self.dataset, batch_size=64, shuffle=False), device=device, save=False, save_path='', title='Training ROC Curve'))
 
     def reweight(self, original, normalize, drop_kwd, save_results=False, save_name='') -> 'pd.DataFrame':
         """Reweight the original data.
@@ -191,11 +196,9 @@ class SingleMLPRwgter(ReweighterBase):
             original, drop_kwd, self.weight_column, drop_neg_wgts=True
         )
         
-        # Transform features
         X = self.scaler.transform(X_df)
         data = torch.tensor(X, dtype=torch.float32)
         
-        # Get predictions
         device = check_device()
         predictions = PredictionUtils.predict_in_batches(self.model, data, device)
         
@@ -211,7 +214,7 @@ class SingleMLPRwgter(ReweighterBase):
         
         # Save if requested
         if save_results:
-            reweighted.to_csv(pjoin(self.results_dir, save_name))
+            reweighted.to_csv(pjoin(self.results_dir, f'{save_name}.csv'))
         
         return reweighted 
  

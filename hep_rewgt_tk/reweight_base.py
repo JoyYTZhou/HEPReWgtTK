@@ -3,12 +3,96 @@ import numpy as np
 import pandas as pd
 import torch, os
 import logging
+from torchviz import make_dot
 import torch.nn as nn
+from torch.nn.utils import spectral_norm
 import seaborn as sns
+import hiddenlayer as hl
 from torch.utils.data import Dataset
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 
 pjoin = os.path.join
+
+def feature_extract_layer(input_dim, latent_dim) -> list:
+    return [
+        nn.Linear(input_dim, latent_dim),
+        nn.ReLU(),
+        nn.BatchNorm1d(latent_dim),
+        nn.Dropout(0.2)
+    ]
+
+def output_layer(last_dim) -> list:
+    return [
+        nn.Linear(last_dim, 1),
+        nn.Sigmoid()
+    ]
+
+def high_dim_discriminator(latent_dim) -> list:
+    """High-dimensional discriminator.
+    
+    Return a list of hidden layers for a high-dimensional discriminator."""
+    return [nn.Linear(latent_dim, 256),
+        nn.LeakyReLU(0.2),
+        nn.BatchNorm1d(256),
+        nn.Dropout(0.3),
+        nn.Linear(256, 128),
+        nn.LeakyReLU(0.2),
+        nn.BatchNorm1d(128),
+        nn.Dropout(0.3),
+        nn.Linear(128, 64),
+        nn.LeakyReLU(0.2),
+        nn.BatchNorm1d(64),
+    ]
+
+def high_dim_with_att(latent_dim) -> list:
+    return [nn.Linear(latent_dim, 512),
+        nn.LeakyReLU(0.2),
+        nn.BatchNorm1d(512),
+        nn.Dropout(0.3),
+        nn.Linear(512, 256),
+        nn.LeakyReLU(0.2),
+        nn.BatchNorm1d(256),
+        nn.Dropout(0.3),
+        nn.MultiheadAttention(256, num_heads=8, dropout=0.3),
+        nn.BatchNorm1d(256),
+        nn.Linear(256, 128),
+        nn.LeakyReLU(0.2),
+        nn.BatchNorm1d(128),
+        nn.Dropout(0.3),
+        nn.Linear(128, 64),
+        nn.LeakyReLU(0.2),
+        nn.BatchNorm1d(64),
+    ]
+
+def stable_discriminator(latent_dim) -> list:
+    """Stable discriminator with spectral normalization.
+    
+    Return a list of hidden layers for a stable discriminator with spectral normalization.
+    """
+    return [spectral_norm(nn.Linear(latent_dim, 256)),
+        nn.LeakyReLU(0.2),
+        nn.BatchNorm1d(256),
+        spectral_norm(nn.Linear(256, 128)),
+        nn.LeakyReLU(0.2),
+        nn.BatchNorm1d(128),
+        spectral_norm(nn.Linear(128, 64)),
+        nn.LeakyReLU(0.2),
+        nn.BatchNorm1d(64),
+    ]
+
+def standard_discriminator(latent_dim) -> list:
+    return [nn.Linear(latent_dim, 256),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(256),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(128),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(64),
+            ]
 
 def add_hidden_layer(layers, in_dim, hidden_dims, activation):
     """Add hidden layers to the model."""
@@ -165,10 +249,6 @@ class ReweighterBase():
     @staticmethod
     def clean_data(df_original, drop_kwd, wgt_col, drop_wgts=True, drop_neg_wgts=True) -> tuple['pd.DataFrame', 'pd.Series', 'pd.DataFrame', 'pd.DataFrame']:
         """Clean the data by dropping columns containing the keywords in `drop_kwd`.
-
-        Parameters:
-        - `drop_kwd`: List of keywords to drop.
-        - `wgt_col`: Column name for the weights.
         
         Return
         - `X`: Features, pandas DataFrame
@@ -409,27 +489,38 @@ class MLPClassifier(nn.Module):
     dropout_rate : float, optional
         Dropout rate for regularization (default: 0.2)
     """
-    def __init__(self, input_dim: int, hidden_dims: list, dropout_rate: float = 0.2):
+    def __init__(self, input_dim: int, first_latent_dim: int, hidden_choice: 'str'='high_dim', dropout_rate: float = 0.2):
         super().__init__()
-        
+
         layers = []
-        prev_dim = input_dim
+        layers.extend(feature_extract_layer(input_dim, first_latent_dim))
+
+        if hidden_choice == 'high_dim':
+            layers.extend(high_dim_discriminator(first_latent_dim))
+        elif hidden_choice == 'stable':
+            layers.extend(stable_discriminator(first_latent_dim))
+        elif hidden_choice == 'high_dim_with_att':
+            layers.extend(high_dim_with_att(first_latent_dim))
+        else:
+            layers.extend(standard_discriminator(first_latent_dim))
         
-        for hidden_dim in hidden_dims:
-            layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
-                nn.ReLU(),
-                nn.BatchNorm1d(hidden_dim),
-                nn.Dropout(dropout_rate)
-            ])
-            prev_dim = hidden_dim
-        
-        # Output layer
-        layers.append(nn.Linear(prev_dim, 1))
-        layers.append(nn.Sigmoid())
-        
+        layers.extend(output_layer(64))
+
         self.model = nn.Sequential(*layers)
     
     def forward(self, x):
         return self.model(x)
     
+    def visualize_architecture(self, save_path):
+        """Visualize the model architecture using torchviz."""
+        batch_size = 32
+        x = torch.randn(batch_size, self.model[0].in_features)
+        y = self.model(x)
+        
+        dot = make_dot(y, params=dict(self.model.named_parameters()))
+        
+        # Save the visualization
+        dot.render(save_path, format='png')
+
+
+        

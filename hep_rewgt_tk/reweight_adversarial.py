@@ -105,6 +105,7 @@ class AdversarialReweighter(ReweighterBase):
         lambda_reg : float
             Regularization parameter for weight estimation
         """
+
         device = check_device()
         
         # Build model
@@ -129,16 +130,21 @@ class AdversarialReweighter(ReweighterBase):
             list(self.discriminator.parameters()),
             lr=lr_d
         )
+
         w_optimizer = optim.Adam(
             list(self.feature_extractor.parameters()) +
             list(self.weight_estimator.parameters()),
             lr=lr_w
         )
 
-        criterion = nn.BCELoss()
+        criterion = nn.BCELoss(reduction='none')
         
         d_losses = []
         w_losses = []
+
+        self.feature_extractor.train()
+        self.discriminator.train()
+        self.weight_estimator.train()
 
         for epoch in range(num_epochs):
             d_epoch_loss = 0
@@ -146,8 +152,6 @@ class AdversarialReweighter(ReweighterBase):
             
             for (source_data, source_weights), (target_data, target_weights) in zip(
                 source_loader, target_loader):
-                
-                batch_size = len(source_data)
                 
                 # Move data to device
                 source_data = source_data.to(device)
@@ -161,8 +165,6 @@ class AdversarialReweighter(ReweighterBase):
                 # Extract features
                 source_features = self.feature_extractor(source_data)
                 target_features = self.feature_extractor(target_data)
-                
-                # Get reweighting factors
                 reweight_factors = self.weight_estimator(source_features)
                 
                 # Discriminator predictions
@@ -173,36 +175,35 @@ class AdversarialReweighter(ReweighterBase):
                 d_loss_source = criterion(
                     source_pred,
                     torch.zeros_like(source_pred)
-                )
+                ) * (source_weights * reweight_factors.detach()).squeeze()
+
                 d_loss_target = criterion(
                     target_pred,
                     torch.ones_like(target_pred)
-                )
-                d_loss = (d_loss_source + d_loss_target) / 2
+                ) * target_weights.squeeze()
                 
-                d_loss.backward()
+                d_loss = (d_loss_source.mean() + d_loss_target.mean()) / 2
+                
+                d_loss.backward(retain_graph=True)
+                # d_loss.backward()
                 d_optimizer.step()
                 
                 # Train weight estimator
-                w_optimizer.zero_grad()
-                
-                # Extract features again
-                source_features = self.feature_extractor(source_data)
-                source_weights = self.weight_estimator(source_features)
-                source_pred = self.discriminator(source_features)
-                
-                # Weight estimator loss
-                w_loss = criterion(
-                    source_pred,
-                    torch.ones_like(source_pred)
-                )
-                
-                # Add regularization to prevent extreme weights
-                w_reg = lambda_reg * torch.mean((source_weights - 1)**2)
-                w_total_loss = w_loss + w_reg
-                
-                w_total_loss.backward()
-                w_optimizer.step()
+                with torch.autograd.detect_anomaly():
+                    w_optimizer.zero_grad()
+                    
+                    # Weight estimator loss
+                    w_loss = criterion(
+                        source_pred,
+                        torch.ones_like(source_pred)
+                    ) * (source_weights * reweight_factors).squeeze()
+                    
+                    # Add regularization to prevent extreme weights
+                    w_reg = lambda_reg * torch.mean((reweight_factors - 1)**2)
+                    w_total_loss = w_loss.mean() + w_reg
+
+                    w_total_loss.backward()
+                    w_optimizer.step()
                 
                 d_epoch_loss += d_loss.item()
                 w_epoch_loss += w_total_loss.item()
