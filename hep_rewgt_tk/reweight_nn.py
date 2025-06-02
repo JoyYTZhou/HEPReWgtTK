@@ -148,7 +148,7 @@ class SingleMLPRwgter(ReweighterBase):
         print(f"Loaded model from epoch {checkpoint['epoch']}")
         return checkpoint['epoch']
     
-    def visualize(self, save=False):
+    def visualize(self, vis_arch=False, save=False):
         """Visualize the training and validation losses + model architecture."""
         plt.figure(figsize=[12, 7])
         plt.plot(self.history['train'], label='Train')
@@ -161,8 +161,10 @@ class SingleMLPRwgter(ReweighterBase):
             plt.savefig(pjoin(self.results_dir, 'train_val_losses.png'))
         else:
             plt.show()
-
-        self.model = self.model.cpu()
+        
+        if vis_arch:
+            self.model = self.model.cpu()
+            self.model.visualize_architecture(pjoin(os.path.abspath(self.results_dir), 'model_arch.png'))
     
     def evaluate(self):
         """Compute the AUC score for the model."""

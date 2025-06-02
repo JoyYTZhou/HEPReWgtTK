@@ -1,8 +1,7 @@
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
-import torch, os
-import logging
+import torch, os, logging
 from torchviz import make_dot
 import torch.nn as nn
 from torch.nn.utils import spectral_norm
@@ -235,6 +234,10 @@ class ReweighterBase():
         self.ori_weight = None
         self.tar_weight = None
         self.results_dir = results_dir
+        if results_dir is not None:
+            if not os.path.exists(results_dir):
+                os.makedirs(results_dir)
+                logging.info(f"Created directory: {results_dir}")
 
     @staticmethod
     def drop_likes(df: 'pd.DataFrame', drop_kwd: 'list[str]' = []):
