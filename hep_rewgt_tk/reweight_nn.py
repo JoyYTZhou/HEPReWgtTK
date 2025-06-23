@@ -15,10 +15,17 @@ from .reweight_base import ReweighterBase, WeightedDataset, MLPClassifier, check
 def weighted_bce_loss(predictions, targets, weights):
     return torch.mean(weights * nn.BCELoss(reduction='none')(predictions, targets))
 
+class SubtractionRwgtMixin:
+    def reweight(self):
+        pass
+
+
 class SingleMLPRwgter(ReweighterBase):
-    def __init__(self, ori_data, tar_data, weight_column, results_dir):
+    def __init__(self, ori_data, tar_data, weight_column, results_dir, drop_kwd: 'list', criterion=nn.BCELoss()):
         super().__init__(ori_data, tar_data, weight_column, results_dir)
         self.scaler = MinMaxScaler()
+        self.drop_kwd = drop_kwd
+        self.criterion = criterion
 
     def prep_data(self, drop_kwd, drop_neg_wgts=True):
         """Preprocess the data into TensorDataset objects.
@@ -41,8 +48,6 @@ class SingleMLPRwgter(ReweighterBase):
 
         Parameters
         ----------
-        num_epochs : int
-            Number of epochs
         hidden_arch : str
             Hidden architecture of the model
         batch_size : int
@@ -58,14 +63,13 @@ class SingleMLPRwgter(ReweighterBase):
         save_interval : int, optional
             Interval between saving checkpoints
         """
-        device = check_device()
+        device = self.device
         input_dim = len(self.features)
 
         # Model setup
         self.model = MLPClassifier(input_dim, latent_dim, hidden_choice=hidden_arch, dropout_rate=dropout
         ).to(device)
         
-        self.criterion = nn.BCELoss()
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
         # Data loaders
@@ -78,14 +82,12 @@ class SingleMLPRwgter(ReweighterBase):
         for epoch in range(num_epochs):
             # Train
             train_loss = TrainingUtils.train_epoch(
-                self.model, train_loader, self.criterion, self.optimizer, device
+                self.model, train_loader, self.optimizer, device, criterion=self.criterion,
             )
             train_losses.append(train_loss)
 
             # Validate
-            val_loss = TrainingUtils.validate(
-                self.model, val_loader, self.criterion, device
-            )
+            val_loss = TrainingUtils.validate(self.model, val_loader, self.criterion, device)
             val_losses.append(val_loss)
 
             # Log progress
@@ -126,7 +128,7 @@ class SingleMLPRwgter(ReweighterBase):
         hidden_dims : list, optional
             Hidden dimensions (required if model not initialized)
         """
-        device = check_device()
+        device = self.device
         
         # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -168,10 +170,11 @@ class SingleMLPRwgter(ReweighterBase):
     
     def evaluate(self):
         """Compute the AUC score for the model."""
-        device = check_device()
+        device = self.device
 
         print("Validation AUC:", self.compute_nn_auc(self.model, DataLoader(self.val_dataset, batch_size=64, shuffle=False), device=device, save=False, save_path='', title='Validation ROC Curve'))
         print("Training AUC:", self.compute_nn_auc(self.model, DataLoader(self.dataset, batch_size=64, shuffle=False), device=device, save=False, save_path='', title='Training ROC Curve'))
+    
 
     def reweight(self, original, normalize, drop_kwd, save_results=False, save_name='') -> 'pd.DataFrame':
         """Reweight the original data.
@@ -194,29 +197,23 @@ class SingleMLPRwgter(ReweighterBase):
         pd.DataFrame
             Reweighted data
         """
-        X_df, weights, neg_df, _ = self.clean_data(
-            original, drop_kwd, self.weight_column, drop_neg_wgts=True
-        )
+        X_df, weights, neg_df, _ = self.clean_data(original, drop_kwd, self.weight_column, drop_neg_wgts=True)
         
         X = self.scaler.transform(X_df)
         data = torch.tensor(X, dtype=torch.float32)
         
         device = check_device()
-        predictions = PredictionUtils.predict_in_batches(self.model, data, device)
-        
-        # Compute new weights
+        scores = PredictionUtils.predict_in_batches(self.model, data, device)
+
         normalize_factor = normalize - neg_df[self.weight_column].sum()
-        new_weights = PredictionUtils.compute_weights(
-            predictions, weights.values, normalize_factor
-        )
+        new_weights, rwgt_ratio = PredictionUtils.compute_weights(
+            scores, weights.values, normalize_factor, self.criterion)
         
-        # Create output DataFrame
         X_df[self.weight_column] = new_weights
+        X_df['rwgt_ratio'] = rwgt_ratio
         reweighted = pd.concat([X_df, neg_df], ignore_index=True)
         
-        # Save if requested
         if save_results:
             reweighted.to_csv(pjoin(self.results_dir, f'{save_name}.csv'))
         
         return reweighted 
- 

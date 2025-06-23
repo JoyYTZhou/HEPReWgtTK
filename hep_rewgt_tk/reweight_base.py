@@ -112,7 +112,7 @@ def check_device():
 
 class TrainingUtils:
     @staticmethod
-    def train_epoch(model, train_loader, criterion, optimizer, device):
+    def train_epoch(model, train_loader, optimizer, device, criterion=nn.BCELoss()):
         """Train model for one epoch.
         
         Parameters
@@ -121,8 +121,6 @@ class TrainingUtils:
             The model to train
         train_loader : DataLoader
             Training data loader
-        criterion : torch.nn.Module
-            Loss function
         optimizer : torch.optim.Optimizer
             Optimizer
         device : torch.device
@@ -153,7 +151,7 @@ class TrainingUtils:
         return running_loss / len(train_loader)
 
     @staticmethod
-    def validate(model, val_loader, criterion, device):
+    def validate(model, val_loader, device, criterion=nn.BCELoss()):
         """Validate the model.
         
         Parameters
@@ -162,8 +160,6 @@ class TrainingUtils:
             The model to validate
         val_loader : DataLoader
             Validation data loader
-        criterion : torch.nn.Module
-            Loss function
         device : torch.device
             Device to use for validation
             
@@ -234,6 +230,7 @@ class ReweighterBase():
         self.ori_weight = None
         self.tar_weight = None
         self.results_dir = results_dir
+        self.device = check_device()
         if results_dir is not None:
             if not os.path.exists(results_dir):
                 os.makedirs(results_dir)
@@ -248,6 +245,7 @@ class ReweighterBase():
             dropped = pd.concat([dropped, df[cols_to_drop]], axis=1)
             df = df.drop(columns=df.filter(like=kwd).columns, inplace=False)
         return df, dropped
+    
     
     @staticmethod
     def clean_data(df_original, drop_kwd, wgt_col, drop_wgts=True, drop_neg_wgts=True) -> tuple['pd.DataFrame', 'pd.Series', 'pd.DataFrame', 'pd.DataFrame']:
@@ -427,8 +425,6 @@ class PredictionUtils:
             Model to use for predictions
         data : torch.Tensor
             Input data
-        device : torch.device
-            Device to use for predictions
         batch_size : int, optional
             Batch size for predictions
             
@@ -448,15 +444,39 @@ class PredictionUtils:
                 predictions.append(pred)
                 
         return torch.cat(predictions).numpy().squeeze()
-
+    
     @staticmethod
-    def compute_weights(predictions, original_weights, normalize_factor, epsilon=1e-6):
+    def compute_rewgt_ratio(infer_score, criterion=nn.BCELoss(), epsilon=1e-6):
+        """Compute reweighting ratio based on infer_score.
+        
+        Parameters
+        ----------
+        infer_score : numpy.ndarray
+            Model infer_score
+        epsilon : float, optional
+            Small value to prevent division by zero
+            
+        Returns
+        -------
+        numpy.ndarray
+            Reweighting ratio
+        """
+        # Clip infer_score to avoid division by zero
+        infer_score = np.clip(infer_score, epsilon, 1 - epsilon)
+        
+        if isinstance(criterion, nn.BCELoss) or isinstance(criterion, nn.MSELoss):
+            reweight_ratio = infer_score / (1 - infer_score)
+        
+        return reweight_ratio
+    
+    @staticmethod
+    def compute_weights(infer_score, original_weights, normalize_factor, epsilon=1e-6, criterion=nn.BCELoss()) -> tuple[np.ndarray, np.ndarray]:
         """Compute reweighting factors.
         
         Parameters
         ----------
-        predictions : numpy.ndarray
-            Model predictions
+        infer_score : numpy.ndarray
+            Model infer_score
         original_weights : numpy.ndarray
             Original sample weights
         normalize_factor : float
@@ -469,16 +489,15 @@ class PredictionUtils:
         numpy.ndarray
             New weights
         """
-        # Clip predictions to avoid division by zero
-        predictions = np.clip(predictions, epsilon, 1 - epsilon)
+        reweight_ratio = PredictionUtils.compute_rewgt_ratio(infer_score, criterion, epsilon)
         
         # Calculate weights using the reweighting formula
-        new_weights = original_weights * predictions / (1 - predictions)
+        new_weights = original_weights * reweight_ratio
         
         # Normalize weights
         new_weights *= normalize_factor / new_weights.sum()
         
-        return new_weights
+        return new_weights, reweight_ratio
 
 class MLPClassifier(nn.Module):
     """Multi-Layer Perceptron for binary classification.
