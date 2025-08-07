@@ -20,7 +20,6 @@ class SubtractionRwgtMixin:
     def reweight(self):
         pass
 
-
 class SingleMLPRwgter(ReweighterBase):
     def __init__(self, src, tgt, w_col, out_dir, drop_kwd: 'list', criterion=nn.BCELoss()):
         super().__init__(src, tgt, w_col, out_dir)
