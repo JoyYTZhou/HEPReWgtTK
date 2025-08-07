@@ -132,6 +132,11 @@ class SingleMLPRwgter(ReweighterBase):
 
         logging.info(f"Loading model from {ckpt_path}, name: {self._name}")
         logging.info(f"Loaded model from epoch {ckpt['epoch']}")
+        
+        # Additional logging for useful parameters in model_state_dict
+        logging.info(f"Number of parameters in the model: {sum(p.numel() for p in self.model.parameters())}")
+        logging.info(f"Trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad)}")
+        
         return ckpt['epoch']
     
     def visualize(self, vis_arch=False, save=False):

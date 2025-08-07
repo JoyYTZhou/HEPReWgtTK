@@ -186,21 +186,7 @@ class TrainingUtils:
 
     @staticmethod
     def save_checkpoint(model, epoch, save_path, optimizer=None, scheduler=None):
-        """Save a model checkpoint.
-        
-        Parameters
-        ----------
-        model : torch.nn.Module
-            The model to save
-        epoch : int
-            Current epoch number
-        save_path : str
-            Path to save the checkpoint
-        optimizer : torch.optim.Optimizer, optional
-            Optimizer state to save
-        scheduler : torch.optim.lr_scheduler._LRScheduler, optional
-            Learning rate scheduler state to save
-        """
+        """Save model checkpoint with optional optimizer and scheduler states."""
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
