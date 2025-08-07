@@ -1,4 +1,5 @@
 import torch
+import logging
 from torch import nn
 from torch.nn.utils import spectral_norm
 from sklearn.model_selection import train_test_split
@@ -21,18 +22,18 @@ class SubtractionRwgtMixin:
 
 
 class SingleMLPRwgter(ReweighterBase):
-    def __init__(self, ori_data, tar_data, weight_column, results_dir, drop_kwd: 'list', criterion=nn.BCELoss()):
-        super().__init__(ori_data, tar_data, weight_column, results_dir)
+    def __init__(self, src, tgt, w_col, out_dir, drop_kwd: 'list', criterion=nn.BCELoss()):
+        super().__init__(src, tgt, w_col, out_dir)
         self.scaler = MinMaxScaler()
         self.drop_kwd = drop_kwd
         self.criterion = criterion
 
-    def prep_data(self, drop_kwd, drop_neg_wgts=True):
+    def prep_data(self, drop_neg_wgts=True):
         """Preprocess the data into TensorDataset objects.
         Drop columns containing the keywords in `drop_kwd` and negatively weighted events if `drop_neg_wgts` is True."""
-        X, y, weights = self.prep_ori_tar(self.ori_data, self.tar_data, drop_kwd, self.weight_column, drop_wgts=True, drop_neg_wgts=drop_neg_wgts)
+        X, y, weights = self.prep_distributions(self.src, self.tgt, self.drop_kwd, self.w_col, drop_wgts=True, drop_neg_wgts=drop_neg_wgts)
         features = list(X.columns)
-        print(f"Features: {features}")
+        logging.info(f"Features: {features}")
 
         X[features] = self.scaler.fit_transform(X[features])
 
@@ -44,25 +45,11 @@ class SingleMLPRwgter(ReweighterBase):
 
     def train(self, num_epochs, hidden_arch: 'str', batch_size, lr, dropout=0.2, save=True, 
              savename='SingleNNmodel.pth', save_interval=30, latent_dim=64):
-        """Train the discriminator model.
-
-        Parameters
-        ----------
-        hidden_arch : str
-            Hidden architecture of the model
-        batch_size : int
-            Batch size
-        lr : float
-            Learning rate
-        dropout : float, optional
-            Dropout rate
-        save : bool, optional
-            Whether to save checkpoints
-        savename : str, optional
-            Base name for saved model files
-        save_interval : int, optional
-            Interval between saving checkpoints
-        """
+        """Train the model with given parameters: hidden_arch (str), batch_size (int), 
+        lr (float), dropout (float, optional), save (bool, optional), savename (str, optional), 
+        save_interval (int, optional).
+        
+        Available hidden architectures: 'high_dim', 'stable', 'high_dim_with_attention', 'stable_with_attention'."""
         device = self.device
         input_dim = len(self.features)
 
@@ -87,68 +74,66 @@ class SingleMLPRwgter(ReweighterBase):
             train_losses.append(train_loss)
 
             # Validate
-            val_loss = TrainingUtils.validate(self.model, val_loader, self.criterion, device)
+            val_loss = TrainingUtils.validate(self.model, val_loader, device, self.criterion)
             val_losses.append(val_loss)
 
             # Log progress
             if epoch % 10 == 0:
-                print(f"Epoch {epoch+1}/{num_epochs}, "
-                      f"Train Loss: {train_loss:.4f}, "
-                      f"Val Loss: {val_loss:.4f}")
+                logging.info(f"Epoch {epoch+1}/{num_epochs}, "
+                             f"Train Loss: {train_loss:.4f}, "
+                             f"Val Loss: {val_loss:.4f}")
 
             # Save checkpoint
             if save and (epoch + 1) % save_interval == 0:
-                save_path = pjoin(self.results_dir, 
-                                f"{savename.split('.')[0]}_{epoch+1}.pth")
+                save_path = pjoin(self.out_dir, 
+                                  f"{savename.split('.')[0]}_{epoch+1}.pth")
                 TrainingUtils.save_checkpoint(
                     self.model, epoch, save_path, self.optimizer
                 )
-                print(f"Model saved at {save_path}")
+                logging.info(f"Model saved at {save_path}")
 
         self.history = {'train': train_losses, 'val': val_losses}
 
         if save:
-            final_path = pjoin(self.results_dir, savename)
+            final_path = pjoin(self.out_dir, savename)
             TrainingUtils.save_checkpoint(
                 self.model, num_epochs, final_path, self.optimizer
             )
-            print(f"Final Model saved to {savename}")
+            logging.info(f"Final model saved at {final_path}")
 
         self._name = savename.split('.')[0]
+        logging.info(f"Training complete. Model name: {self._name}")
 
-    def load_checkpoint(self, checkpoint_path, input_dim, hidden_choice:'str', latent_dim=64):
+    def load_model(self, ckpt_path, in_dim, arch_choice: 'str', latent_dim=64):
         """Load model from a checkpoint.
         
         Parameters
         ----------
-        checkpoint_path : str
+        ckpt_path : str
             Path to the checkpoint file
-        input_dim : int, optional
-            Input dimension (required if model not initialized)
-        hidden_dims : list, optional
-            Hidden dimensions (required if model not initialized)
+        in_dim : int
+            Input dimension
+        arch_choice : str
+            Hidden architecture choice
+        latent_dim : int, optional
+            Latent dimension size
         """
         device = self.device
         
-        # Load checkpoint
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        ckpt = torch.load(ckpt_path, map_location=device)
         
-        # Initialize model if not exists
-        self.model = MLPClassifier(input_dim, latent_dim, hidden_choice=hidden_choice
-        ).to(device)
+        self.model = MLPClassifier(in_dim, latent_dim, hidden_choice=arch_choice).to(device)
+        self.model.load_state_dict(ckpt['model_state_dict'])
         
-        # Load model state
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        
-        # Initialize and load optimizer if exists in checkpoint
-        if checkpoint['optimizer_state_dict'] is not None:
+        if ckpt['optimizer_state_dict'] is not None:
             self.optimizer = optim.Adam(self.model.parameters())
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         
-        self._name = os.path.splitext(os.path.basename(checkpoint_path))[0]
-        
-        print(f"Loaded model from epoch {checkpoint['epoch']}")
-        return checkpoint['epoch']
+        self._name = os.path.splitext(os.path.basename(ckpt_path))[0]
+
+        logging.info(f"Loading model from {ckpt_path}, name: {self._name}")
+        logging.info(f"Loaded model from epoch {ckpt['epoch']}")
+        return ckpt['epoch']
     
     def visualize(self, vis_arch=False, save=False):
         """Visualize the training and validation losses + model architecture."""
@@ -160,13 +145,13 @@ class SingleMLPRwgter(ReweighterBase):
         plt.legend()
         plt.grid()
         if save:
-            plt.savefig(pjoin(self.results_dir, 'train_val_losses.png'))
+            plt.savefig(pjoin(self.out_dir, 'train_val_losses.png'))
         else:
             plt.show()
         
         if vis_arch:
             self.model = self.model.cpu()
-            self.model.visualize_architecture(pjoin(os.path.abspath(self.results_dir), 'model_arch.png'))
+            self.model.visualize_architecture(pjoin(os.path.abspath(self.out_dir), 'model_arch.png'))
     
     def evaluate(self):
         """Compute the AUC score for the model."""
@@ -174,46 +159,55 @@ class SingleMLPRwgter(ReweighterBase):
 
         print("Validation AUC:", self.compute_nn_auc(self.model, DataLoader(self.val_dataset, batch_size=64, shuffle=False), device=device, save=False, save_path='', title='Validation ROC Curve'))
         print("Training AUC:", self.compute_nn_auc(self.model, DataLoader(self.dataset, batch_size=64, shuffle=False), device=device, save=False, save_path='', title='Training ROC Curve'))
-    
 
-    def reweight(self, original, normalize, drop_kwd, save_results=False, save_name='') -> 'pd.DataFrame':
-        """Reweight the original data.
+    def reweight(self, data, norm_factor, save=False, filename='') -> pd.DataFrame:
+        """Reweight the input data using the trained model.
 
         Parameters
         ----------
-        original : pd.DataFrame
-            Original data to be reweighted
-        normalize : float
-            Normalization factor
-        drop_kwd : list
-            Keywords for columns to drop
-        save_results : bool, optional
-            Whether to save results to file
-        save_name : str, optional
-            Name of file to save results
-            
+        data : pd.DataFrame
+            Input data to reweight.
+        norm_factor : float
+            Normalization factor for weights.
+        save : bool, optional
+            Save results to a file if True.
+        filename : str, optional
+            Name of the output file.
+
         Returns
         -------
         pd.DataFrame
-            Reweighted data
+            Data with updated weights and reweighting ratios.
         """
-        X_df, weights, neg_df, _ = self.clean_data(original, drop_kwd, self.weight_column, drop_neg_wgts=True)
+        logging.info("Starting reweighting process.")
+        X, orig_weights, neg_data, dropped = self.clean_data(data, self.drop_kwd, self.w_col, drop_neg_wgts=True)
         
-        X = self.scaler.transform(X_df)
-        data = torch.tensor(X, dtype=torch.float32)
+        X_scaled = self.scaler.transform(X)
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(self.device)
         
-        device = check_device()
-        scores = PredictionUtils.predict_in_batches(self.model, data, device)
+        logging.info("Predicting scores using the trained model.")
+        scores = PredictionUtils.predict_in_batches(self.model, X_tensor, self.device)
 
-        normalize_factor = normalize - neg_df[self.weight_column].sum()
+        norm_adj = norm_factor - neg_data[self.w_col].sum()
         new_weights, rwgt_ratio = PredictionUtils.compute_weights(
-            scores, weights.values, normalize_factor, self.criterion)
-        
-        X_df[self.weight_column] = new_weights
-        X_df['rwgt_ratio'] = rwgt_ratio
-        reweighted = pd.concat([X_df, neg_df], ignore_index=True)
-        
-        if save_results:
-            reweighted.to_csv(pjoin(self.results_dir, f'{save_name}.csv'))
-        
-        return reweighted 
+            scores, orig_weights.values, norm_adj, criterion=self.criterion)
+
+        if self.w_col in X.columns:
+            raise ValueError(f"Column '{self.w_col}' already exists in the DataFrame.")
+
+        X[self.w_col] = new_weights
+        X['rwgt_ratio'] = rwgt_ratio
+
+        if not dropped.empty:
+            dropped = dropped.rename(columns={self.w_col: 'original_weights'})
+            result = pd.concat([X, dropped], axis=1)
+        else:
+            result = X
+
+        if save:
+            output_path = pjoin(self.out_dir, f'{filename}.csv')
+            result.to_csv(output_path, index=False)
+            logging.info(f"Reweighted data saved to {output_path}")
+
+        logging.info("Reweighting process completed.")
+        return result

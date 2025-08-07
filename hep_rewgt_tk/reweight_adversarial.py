@@ -60,7 +60,7 @@ class AdversarialReweighter(ReweighterBase):
 
     def prep_data(self, drop_kwd, drop_neg_wgts=True):
         """Prepare data for training."""
-        X, y, weights = self.prep_ori_tar(
+        X, y, weights = self.prep_distributions(
             self.ori_data, self.tar_data, drop_kwd, 
             self.weight_column, drop_wgts=True, 
             drop_neg_wgts=drop_neg_wgts

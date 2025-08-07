@@ -16,7 +16,7 @@ class SingleXGBReweighter(ReweighterBase):
         self.metric = 'logloss'
 
     def prep_data(self, drop_kwd, drop_neg_wgts=True):
-        X, y, weights = self.prep_ori_tar(self.ori_data, self.tar_data, drop_kwd, self.weight_column, drop_neg_wgts)
+        X, y, weights = self.prep_distributions(self.ori_data, self.tar_data, drop_kwd, self.weight_column, drop_neg_wgts)
         print("X columns: ")
         print(X.columns)
 

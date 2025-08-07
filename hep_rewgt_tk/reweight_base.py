@@ -213,28 +213,28 @@ class ReweighterBase():
     """Base class for reweighting.
 
     Attributes:
-    - `ori_data`: pandas DataFrame containing the original data.
-    - `tar_data`: pandas DataFrame containing the target data.
-    - `weight_column`: Column name for the weights.
-    - `ori_weight`: Weights for the original data.
-    - `tar_weight`: Weights for the target data.
-    - `results_dir`: Base directory to save the results, e.g. plots."""
-    def __init__(self, ori_data:'pd.DataFrame', tar_data:'pd.DataFrame', weight_column, results_dir):
+    - `src`: pandas DataFrame for the source/original distribution (label 0).
+    - `tgt`: pandas DataFrame for the target distribution (label 1).
+    - `w_col`: Column name for the weights.
+    - `src_w`: Weights for the source data.
+    - `tgt_w`: Weights for the target data.
+    - `out_dir`: Base directory to save the results, e.g. plots."""
+    def __init__(self, src:'pd.DataFrame', tgt:'pd.DataFrame', w_col, out_dir):
         """
         Parameters:
-        `ori_data`: pandas DataFrame containing the original data.
-        `tar_data`: pandas DataFrame containing the target data."""
-        self.ori_data = ori_data
-        self.tar_data = tar_data
-        self.weight_column = weight_column
-        self.ori_weight = None
-        self.tar_weight = None
-        self.results_dir = results_dir
+        `src`: pandas DataFrame for the source/original distribution (label 0).
+        `tgt`: pandas DataFrame for the target distribution (label 1)."""
+        self.src = src
+        self.tgt = tgt
+        self.w_col = w_col
+        self.src_w = None
+        self.tgt_w = None
+        self.out_dir = out_dir
         self.device = check_device()
-        if results_dir is not None:
-            if not os.path.exists(results_dir):
-                os.makedirs(results_dir)
-                logging.info(f"Created directory: {results_dir}")
+        if out_dir is not None:
+            if not os.path.exists(out_dir):
+                os.makedirs(out_dir)
+                logging.info(f"Created directory: {out_dir}")
 
     @staticmethod
     def drop_likes(df: 'pd.DataFrame', drop_kwd: 'list[str]' = []):
@@ -245,7 +245,6 @@ class ReweighterBase():
             dropped = pd.concat([dropped, df[cols_to_drop]], axis=1)
             df = df.drop(columns=df.filter(like=kwd).columns, inplace=False)
         return df, dropped
-    
     
     @staticmethod
     def clean_data(df_original, drop_kwd, wgt_col, drop_wgts=True, drop_neg_wgts=True) -> tuple['pd.DataFrame', 'pd.Series', 'pd.DataFrame', 'pd.DataFrame']:
@@ -258,15 +257,23 @@ class ReweighterBase():
         - `dropped_X`: DataFrame containing the dropped columns.
         """
         df = df_original.copy()
-        neg_df = df[df[wgt_col] < 0]
-        df = df[df[wgt_col] > 0] if drop_neg_wgts else df
+        neg_df = df[df[wgt_col] < 0].reset_index(drop=True)
+        num_neg = len(neg_df)
+        total = len(df_original)
+        if drop_neg_wgts:
+            df = df[df[wgt_col] > 0]
+        num_dropped = total - len(df)
+        logging.info(f"Dropped {num_dropped} events with negative weights out of {total} events.")
 
-        print("Dropped ", len(df_original) - len(df), " events with negative weights out of ", len(df_original), " events.")
+        drop_kwd_local = drop_kwd.copy()
+        if drop_wgts and wgt_col not in drop_kwd_local:
+            drop_kwd_local.append(wgt_col)
+        X, dropped_X = ReweighterBase.drop_likes(df, drop_kwd_local)
 
-        if drop_wgts: drop_kwd.append(wgt_col)
-        X, dropped_X = ReweighterBase.drop_likes(df, drop_kwd)
-
-        weights = df[wgt_col]
+        # Reset index to avoid reindexing errors later
+        X = X.reset_index(drop=True)
+        dropped_X = dropped_X.reset_index(drop=True)
+        weights = df[wgt_col].reset_index(drop=True)
         
         return X, weights, neg_df, dropped_X
     
@@ -276,25 +283,30 @@ class ReweighterBase():
         return pd.Series([label]*length)
     
     @staticmethod
-    def prep_ori_tar(ori, tar, drop_kwd, wgt_col, drop_neg_wgts=True, drop_wgts=True):
-        """Preprocess the original and target data by dropping columns containing the keywords in `drop_kwd`."""
+    def prep_distributions(dist_a, dist_b, drop_kwd, wgt_col, drop_neg_wgts=True, drop_wgts=True):
+        """Preprocess two distributions by dropping columns with keywords in `drop_kwd`.
+        Assign label 0 to dist_a, 1 to dist_b. Returns features, labels, and weights."""
+        X_a, w_a, _, _ = ReweighterBase.clean_data(dist_a, drop_kwd, wgt_col, drop_neg_wgts=drop_neg_wgts, drop_wgts=drop_wgts)
+        y_a = ReweighterBase.int_label(0, len(X_a))
+        X_b, w_b, _, _ = ReweighterBase.clean_data(dist_b, drop_kwd, wgt_col, drop_neg_wgts=drop_neg_wgts, drop_wgts=drop_wgts)
+        y_b = ReweighterBase.int_label(1, len(X_b))
         
-        X_ori, w_ori, _, _= ReweighterBase.clean_data(ori, drop_kwd, wgt_col, drop_neg_wgts=drop_neg_wgts, drop_wgts=drop_wgts)
-        y_ori = ReweighterBase.int_label(0, len(X_ori))
-        X_tar, w_tar, _, _ = ReweighterBase.clean_data(tar, drop_kwd, wgt_col, drop_neg_wgts=drop_neg_wgts, drop_wgts=drop_wgts)
-        y_tar = ReweighterBase.int_label(1, len(X_tar))
+        return (
+            pd.concat([X_a, X_b], ignore_index=True, axis=0),
+            pd.concat([y_a, y_b], ignore_index=True, axis=0),
+            pd.concat([w_a, w_b], ignore_index=True, axis=0)
+        )
         
-        return pd.concat([X_ori, X_tar], ignore_index=True, axis=0), pd.concat([y_ori, y_tar], ignore_index=True, axis=0), pd.concat([w_ori, w_tar], ignore_index=True, axis=0)
-    
     @staticmethod
-    def draw_distributions(original, target, o_wgt, t_wgt, original_label, target_label, column, bins=10, range=None, save_path=False):
-        """Draw the distributions of the original and target data. Normalized."""
+    def draw_distributions(distributions, labels, weights, column, bins=10, range=None, save_path=False):
+        """Draw normalized histograms for multiple datasets."""
         hist_settings = {'bins': bins, 'density': True, 'alpha': 0.5}
         plt.figure(figsize=[12, 7])
-        xlim = np.percentile(np.hstack([target[column]]), [0.01, 99.99])
-        range = xlim if range is None else range
-        plt.hist(original[column], weights=o_wgt, range=range, label=original_label, **hist_settings)
-        plt.hist(target[column], weights=t_wgt, range=range, label=target_label, **hist_settings)
+        if range is None:
+            all_vals = np.hstack([d[column] for d in distributions])
+            range = np.percentile(all_vals, [0.01, 99.99])
+        for dist, label, wgt in zip(distributions, labels, weights):
+            plt.hist(dist[column], weights=wgt, range=range, label=label, **hist_settings)
         plt.legend(loc='best')
         plt.title(column)
         if save_path:
@@ -385,48 +397,16 @@ class ReweighterBase():
             plt.savefig(save_path)
         plt.close()
 
-class WeightedDataset(Dataset):
-    """Dataset class for weighted data."""
-    def __init__(self, dataframe, feature_columns, weight_column):
-        self.data = torch.tensor(dataframe[feature_columns].values, dtype=torch.float32)
-        self.weights = torch.tensor(dataframe[weight_column].values, dtype=torch.float32)
-    
-    def __len__(self):
-        return len(self.data)
-        
-    def __getitem__(self, idx):
-        data = self.data[idx]
-        weight = self.weights[idx]
-        return torch.tensor(data, dtype=torch.float), torch.tensor(weight, dtype=torch.float)
-
-class Generator(nn.Module):
-    """Generator class for the reweighting model."""
-    def __init__(self, input_dim, output_dim, hidden_dims):
-        super().__init__()
-
-        layers = []
-        add_hidden_layer(layers, input_dim, hidden_dims, nn.ReLU())
-        layers.append(nn.Linear(hidden_dims[-1], output_dim))
-        layers.append(nn.Tanh())
-
-        self.main = nn.Sequential(*layers)
-    
-    def forward(self, z):
-        return self.main(z)
-
 class PredictionUtils:
     @staticmethod
-    def predict_in_batches(model, data, device, batch_size=512):
+    def predict_in_batches(model, data, device, batch_size=512) -> np.ndarray:
         """Make predictions in batches.
         
         Parameters
         ----------
         model : torch.nn.Module
-            Model to use for predictions
         data : torch.Tensor
-            Input data
         batch_size : int, optional
-            Batch size for predictions
             
         Returns
         -------
