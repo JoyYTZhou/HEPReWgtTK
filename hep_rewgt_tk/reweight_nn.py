@@ -11,7 +11,7 @@ from os.path import join as pjoin
 import pandas as pd
 from torchviz import make_dot
 import os
-from .reweight_base import ReweighterBase, WeightedDataset, MLPClassifier, check_device, TrainingUtils, PredictionUtils
+from .reweight_base import ReweighterBase, MLPClassifier, TrainingUtils, PredictionUtils
 
 def weighted_bce_loss(predictions, targets, weights):
     return torch.mean(weights * nn.BCELoss(reduction='none')(predictions, targets))
