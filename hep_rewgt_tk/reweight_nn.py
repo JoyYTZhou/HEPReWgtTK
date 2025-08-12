@@ -16,10 +16,6 @@ from .reweight_base import ReweighterBase, MLPClassifier, TrainingUtils, Predict
 def weighted_bce_loss(predictions, targets, weights):
     return torch.mean(weights * nn.BCELoss(reduction='none')(predictions, targets))
 
-class SubtractionRwgtMixin:
-    def reweight(self):
-        pass
-
 class SingleMLPRwgter(ReweighterBase):
     def __init__(self, src, tgt, w_col, out_dir, drop_kwd: 'list', criterion=nn.BCELoss()):
         super().__init__(src, tgt, w_col, out_dir)
@@ -164,7 +160,7 @@ class SingleMLPRwgter(ReweighterBase):
         print("Validation AUC:", self.compute_nn_auc(self.model, DataLoader(self.val_dataset, batch_size=64, shuffle=False), device=device, save=False, save_path='', title='Validation ROC Curve'))
         print("Training AUC:", self.compute_nn_auc(self.model, DataLoader(self.dataset, batch_size=64, shuffle=False), device=device, save=False, save_path='', title='Training ROC Curve'))
 
-    def reweight(self, data, norm_factor, save=False, filename='') -> pd.DataFrame:
+    def reweight(self, data, norm_factor, save=False, filename='', method='reweight') -> pd.DataFrame:
         """Reweight the input data using the trained model.
 
         Parameters
@@ -193,8 +189,14 @@ class SingleMLPRwgter(ReweighterBase):
         scores = PredictionUtils.predict_in_batches(self.model, X_tensor, self.device)
 
         norm_adj = norm_factor - neg_data[self.w_col].sum()
-        new_weights, rwgt_ratio = PredictionUtils.compute_weights(
-            scores, orig_weights.values, norm_adj, criterion=self.criterion)
+        if method == 'reweight':
+            new_weights, rwgt_ratio = PredictionUtils.compute_weights(
+                scores, orig_weights.values, norm_adj)
+        elif method == 'subtraction':
+            new_weights, rwgt_ratio = PredictionUtils.compute_sub_weights(
+                scores, orig_weights.values, norm_adj)
+        else:
+            logging.error(f"Unknown method '{method}' specified for reweighting.")
 
         if self.w_col in X.columns:
             raise ValueError(f"Column '{self.w_col}' already exists in the DataFrame.")
@@ -224,3 +226,7 @@ class SingleMLPRwgter(ReweighterBase):
 
         logging.info("Reweighting process completed.")
         return result
+
+class SubtractionRwgtMixin:
+    def reweight(self):
+        pass

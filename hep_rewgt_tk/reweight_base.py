@@ -412,57 +412,32 @@ class PredictionUtils:
         return torch.cat(predictions).numpy().squeeze()
     
     @staticmethod
-    def compute_rewgt_ratio(infer_score, criterion=nn.BCELoss(), epsilon=1e-6):
-        """Compute reweighting ratio based on infer_score.
-        
-        Parameters
-        ----------
-        infer_score : numpy.ndarray
-            Model infer_score
-        epsilon : float, optional
-            Small value to prevent division by zero
-            
-        Returns
-        -------
-        numpy.ndarray
-            Reweighting ratio
-        """
-        # Clip infer_score to avoid division by zero
-        infer_score = np.clip(infer_score, epsilon, 1 - epsilon)
+    def compute_weights(score, orig_wgts, norm_fac, eps=1e-6, criterion=nn.BCELoss()) -> tuple[np.ndarray, np.ndarray]:
+        """Compute reweighting factors and new weights."""
+        score = np.clip(score, eps, 1 - eps)
         
         if isinstance(criterion, nn.BCELoss) or isinstance(criterion, nn.MSELoss):
-            reweight_ratio = infer_score / (1 - infer_score)
+            reweight_ratio = score / (1 - score)
         
-        return reweight_ratio
+        new_weights = orig_wgts * reweight_ratio
+        new_weights *= norm_fac / new_weights.sum()
+        
+        return new_weights, reweight_ratio
     
     @staticmethod
-    def compute_weights(infer_score, original_weights, normalize_factor, epsilon=1e-6, criterion=nn.BCELoss()) -> tuple[np.ndarray, np.ndarray]:
-        """Compute reweighting factors.
-        
-        Parameters
-        ----------
-        infer_score : numpy.ndarray
-            Model infer_score
-        original_weights : numpy.ndarray
-            Original sample weights
-        normalize_factor : float
-            Normalization factor
-        epsilon : float, optional
-            Small value to prevent division by zero
-            
-        Returns
-        -------
-        numpy.ndarray
-            New weights
+    def compute_sub_weights(score, ori_wgts, norma_fac, eps=1e-6) -> tuple[np.ndarray, np.ndarray]:
+        """Compute sub-sample weights, get distribution p_subtracted = p_total - p_MC
         """
-        reweight_ratio = PredictionUtils.compute_rewgt_ratio(infer_score, criterion, epsilon)
+        score = np.clip(score, eps, 1 - eps)
         
-        # Calculate weights using the reweighting formula
-        new_weights = original_weights * reweight_ratio
-        
-        # Normalize weights
-        new_weights *= normalize_factor / new_weights.sum()
-        
+        p_MC = 1 - score
+        p_Total = score
+        p_TotalMinusMC = p_Total - p_MC
+
+        reweight_ratio = p_TotalMinusMC / p_Total
+        new_weights = p_TotalMinusMC / p_Total * ori_wgts
+        new_weights *= norma_fac / new_weights.sum()
+
         return new_weights, reweight_ratio
 
 class MLPClassifier(nn.Module):
