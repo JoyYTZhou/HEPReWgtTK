@@ -201,12 +201,21 @@ class SingleMLPRwgter(ReweighterBase):
 
         X[self.w_col] = new_weights
         X['rwgt_ratio'] = rwgt_ratio
+        X['scores'] = scores
 
         if not dropped.empty:
             dropped = dropped.rename(columns={self.w_col: 'original_weights'})
             result = pd.concat([X, dropped], axis=1)
         else:
             result = X
+
+        if not neg_data.empty:
+            # Add missing columns to neg_data with appropriate default values
+            neg_data['rwgt_ratio'] = 1.0  # No reweighting for negative weight events
+            neg_data['scores'] = 0.0      # Default score for negative weight events
+            
+            # Concatenate row-wise
+            result = pd.concat([result, neg_data], axis=0, ignore_index=True)
 
         if save:
             output_path = pjoin(self.out_dir, f'{filename}.csv')
